@@ -1,0 +1,140 @@
+ContainerPort:
+  - name: app
+    port: 8080
+    protocol: TCP
+    servicePort: 80
+    supportStreaming: false
+    useHTTP2: false
+GracePeriod: 60
+LivenessProbe:
+  Path: /health
+  failureThreshold: 3
+  initialDelaySeconds: 60
+  periodSeconds: 60
+  port: 8080
+  scheme: HTTP
+  successThreshold: 1
+  tcp: false
+  timeoutSeconds: 5
+MaxSurge: 2
+MaxUnavailable: 0
+MinReadySeconds: 60
+ReadinessProbe:
+  Path: /health
+  failureThreshold: 3
+  initialDelaySeconds: 10
+  periodSeconds: 20
+  port: 8080
+  scheme: HTTP
+  successThreshold: 1
+  tcp: false
+  timeoutSeconds: 5
+affinity:
+  enabled: true
+  values:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: karpenter.sh/capacity-type
+                operator: In
+                values:
+                  - spot
+tolerations:
+  - key: karpenter.sh/capacity-type
+    operator: Equal
+    value: spot
+    effect: NoSchedule
+autoscaling:
+  enabled: true
+  MinReplicas: 1
+  MaxReplicas: 2
+  TargetCPUUtilizationPercentage: 80
+  TargetMemoryUtilizationPercentage: 80
+containerSpec:
+  lifecycle:
+    enabled: true
+    preStop:
+      exec:
+        command:
+          - /bin/sh
+          - -c
+          - sleep 15
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+containers: []
+deploymentType: ROLLING
+deployment:
+  strategy:
+    rolling:
+      maxSurge: 2
+      maxUnavailable: 0
+rolloutLabels:
+  env: eks-dev
+  app-group: light-apps
+  Brand: Ring
+  Business-Units: si-creva
+  Language: GO
+  Team: shared
+image:
+  pullPolicy: IfNotPresent
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: onemi-app-dev-internal
+    alb.ingress.kubernetes.io/group.order: "20"
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:451914973813:certificate/da222197-1002-4ef8-8cdb-5a7c65b3984d
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/success-codes: 200-499
+  hosts:
+    - host: admin-service-cli.test.paywithring.com
+      pathType: ImplementationSpecific
+      paths:
+        - /*
+pauseForSecondsBeforeSwitchActive: 30
+podAnnotations:
+  downscaler/exclude: "true"
+podDisruptionBudget:
+  minAvailable: "0"
+podLabels:
+  env: eks-dev
+  app-group: light-apps
+  Brand: Ring
+  Business-Units: on-emi
+  Language: GO
+  Team: shared
+  service: admin-service-cli
+replicaCount: 1
+resources:
+  limits:
+    cpu: 500m
+    memory: 900Mi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+volumes:
+  - name: tmp-dir
+    emptyDir: {}
+volumeMounts:
+  - name: tmp-dir
+    mountPath: /tmp
+restartPolicy: Always
+server:
+  deployment:
+    image: ""
+    image_tag: 1-95af053
+service:
+  type: ClusterIP
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::451914973813:role/onemi-app-dev-admin-service-irsa-role
+  create: true
+  name: admin-service-go-sa

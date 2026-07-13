@@ -1,0 +1,65 @@
+# ==============================================================================
+# DEVTRON BASE BLANK BOILERPLATE TEMPLATE
+# ==============================================================================
+app_name: ""        # [String] Required. Name of your application container.
+project_name: ""    # [String] Required. Target Devtron project group workspace.
+
+# Source Control Systems Configuration
+git_repositories:
+  - url: ""                  # [String] Git remote clone endpoint URL.
+    git_account_name: ""     # [String] Target credential token provider.
+    checkout_path: "./"      # [String] Default "./". Local runner repository folder target.
+    fetch_submodules: false  # [Boolean] Default false. Set true if repo has submodules.
+
+# Continous Integration Image Compilation Parameters
+build_configurations:
+  container_registry_name: "" # [String] Global registry provider target.
+  repository_name: ""         # [String] Registry path endpoint/repository designation.
+  build_type: ""              # [String] Options: "DockerfileExists" OR "Buildpack"
+  dockerfile_path: ""         # [String] Path relative to git root. e.g., "Dockerfile"
+  # Target build arguments configuration (Optional)
+  # args:
+  #   ENV_VAR: "value"
+
+# Global Manifest and Secret Bindings
+base_configurations:
+  deployment_template:
+    version: ""                 # [String] Devtron core chart semantic version.
+    chart_type: ""              # [String] Deployment model: "Deployment", "Rollout Deployment", "StatefulSet", "Job", "CronJob"
+    show_application_metrics: false # [Boolean] Injects Prometheus instrumentation parameters.
+    values_path: ""             # [String] Local baseline chart parameter filename.
+  
+  # Global secrets array definition (Optional)
+  secrets: []
+
+# CI/CD Multi-Stage Execution Matrices
+workflows:
+  - ci_pipeline:
+      type: "CI_BUILD"
+      is_manual: false          # [Boolean] False = Hook automatic webhook branch polling triggers.
+      name: ""                  # [String] Unique building block identifier tag.
+      branches:
+        - repo: ""              # [String] Matches repository layout url/index target above.
+          branch: ""            # [String] Target tracking code branch. e.g., "main"
+          type: "SOURCE_TYPE_BRANCH_FIXED" # Options: "SOURCE_TYPE_BRANCH_FIXED", "SOURCE_TYPE_BRANCH_REGEX"
+          
+    cd_pipelines:
+      - name: ""                # [String] Unique delivery block identifier tag.
+        environment_name: ""    # [String] Destination deployment cluster environment.
+        is_manual: false        # [Boolean] Automatically push triggers post-successful CI phase completion.
+        deployment_type: ""     # [String] Core orchestrator engine: "argo_cd" OR "helm"
+        deployment_strategies:
+          - name: ""            # [String] Strategies: "ROLLING", "CANARY", "BLUE-GREEN", "RECREATE"
+            strategy: {}        # [Object] Specific parameter maps bound to the named strategy.
+            default: true       # [Boolean] Identifies master deployment delivery configuration.
+            
+        env_configuration:
+          deployment_template:
+            type: "override"    # [String] Static constant tracking parameter initialization context.
+            version: ""         # [String] Target reference deployment chart version identifier.
+            merge_strategy: ""  # [String] Resolution conflict handling: "replace" OR "patch"
+            show_application_metrics: false
+            values_path: ""     # [String] Target environment values configuration parameters path.
+          
+          # Target cluster specific secrets integration mapping array
+          secrets: []

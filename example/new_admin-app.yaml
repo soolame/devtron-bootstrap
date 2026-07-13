@@ -1,0 +1,83 @@
+app_name: "admin-service-go-cli"
+project_name: "platform-engineering"
+
+git_repositories:
+  - url: "https://bitbucket.org/fastbanking/ring-go-admin-service"
+    git_account_name: "Bitbucket-Sulaim2"
+    checkout_path: "./"
+    fetch_submodules: false
+
+build_configurations:
+  container_registry_name: "ring-dev"
+  repository_name: "ring-go-admin-service"
+  build_type: "DockerfileExists"
+  dockerfile_path: "scripts/docker/app.Dockerfile"
+
+base_configurations:
+  deployment_template:
+    version: "5.2.0"
+    chart_type: "Rollout Deployment"
+    show_application_metrics: false
+    values_path: "base-admin-service-cli-values.yaml"
+  secrets:
+    - name: "aws-asm-admin-service-cli"
+      type: "environment"
+      external: true
+      externalType: "ESO_AWSSecretsManager"
+      esoSecretData:
+        secretStore:
+          aws:
+            service: "SecretsManager"
+            region: "ap-south-1"
+            role: "arn:aws:iam::451914973813:role/onemi-app-dev-admin-service-irsa-role"
+        refreshInterval: "2m"
+        esoDataFrom:
+          - extract:
+              key: "devtron-eks-admin-service-go-dev"
+
+workflows:
+  - ci_pipeline:
+      type: "CI_BUILD"
+      is_manual: false
+      name: "ci-dev-pe"
+      branches:
+        - repo: "ring-go-admin-service"
+          branch: "development"
+          type: "SOURCE_TYPE_BRANCH_FIXED"
+    cd_pipelines:
+      - name: "cd-dev-pe"
+        environment_name: "dev-pe"
+        is_manual: false
+        deployment_type: "argo_cd"
+        deployment_strategies:
+          - name: "ROLLING"
+            strategy:
+              maxSurge: "25%"
+              maxUnavailable: 1
+            default: true
+        env_configuration:
+          deployment_template:
+            type: "override"
+            version: "5.2.0"
+            merge_strategy: "replace"
+            show_application_metrics: false
+            values_path: "override-admin-service-cli-dev-pe-values.yaml"
+          secrets:
+            - name: "aws-asm-admin-service-cli"
+              type: "environment"
+              external: true
+              mergeStrategy: "replace"
+              externalType: "ESO_AWSSecretsManager"
+              esoSecretData:
+                secretStore:
+                  aws:
+                    service: "SecretsManager"
+                    region: "ap-south-1"
+                    auth:
+                      jwt:
+                        serviceAccountRef:
+                          name: "admin-service-go-sa"
+                refreshInterval: "2m"
+                esoDataFrom:
+                  - extract:
+                      key: "devtron-eks-admin-service-go-dev"
