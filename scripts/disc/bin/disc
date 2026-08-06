@@ -1,0 +1,46 @@
+#!/bin/bash
+# disc - Devtron migration info CLI
+# Usage: disc <command> [args]
+
+set -euo pipefail
+
+SUBCOMMAND=${1:-}
+
+RESOLVED="${BASH_SOURCE[0]}"
+while [[ -L "$RESOLVED" ]]; do
+    LINK_TARGET="$(readlink "$RESOLVED")"
+    if [[ "$LINK_TARGET" == /* ]]; then
+        RESOLVED="$LINK_TARGET"
+    else
+        RESOLVED="$(dirname "$RESOLVED")/$LINK_TARGET"
+    fi
+done
+SCRIPT_PATH="$(cd "$(dirname "$RESOLVED")" && pwd)/$(basename "$RESOLVED")"
+DISC_HOME="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+LIBEXEC="$DISC_HOME/libexec"
+
+usage() {
+    echo "Usage: disc <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  ecs <cluster-name> <service-name> [region]   extract config.yaml info from an ECS service"
+    echo "  eks <org> <service-name>                      extract info from a helm-app-non-prod values file"
+}
+
+if [[ -z "$SUBCOMMAND" ]]; then
+    usage
+    exit 1
+fi
+
+shift || true
+
+TARGET="$LIBEXEC/disc-$SUBCOMMAND.sh"
+
+if [[ ! -f "$TARGET" ]]; then
+    echo "Unknown command: $SUBCOMMAND"
+    echo ""
+    usage
+    exit 1
+fi
+
+exec bash "$TARGET" "$@"

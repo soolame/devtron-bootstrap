@@ -1,0 +1,95 @@
+# Example answers file for a "web" style app (a gateway/API — anything with
+# an ALB ingress in front of it). dev always gets full-spot placement; qa and
+# prod share whichever strategy you pick in pod_placement.qa_prod_strategy,
+# since qa is meant to mirror prod scheduling behavior.
+
+app_name: "new-gateway-go"
+app_type: "web"                # the only two valid values: consumer | web
+project_name: "merchant-sales" # the exact Devtron project name — no hardcoded lookup, type it out
+team_code: "ms"                 # short code used only for namespace suffixing (dev-ms, qa-ms, prod-ms)
+
+# Include the "-go" suffix — see the comment in answers-consumer.example.yaml
+# for how this splits between the Secrets Manager key and the IRSA role name.
+base_service_name: "new-gateway-go"
+
+service_account:
+  create: true
+  name: null
+
+git:
+  url: "https://bitbucket.org/fastbanking/go-new-gateway"
+  # account_name_nonprod / account_name_prod default to "Bitbucket-Sulaim2" /
+  # "Bitbucket" respectively — only set these if this service needs a
+  # different git credential.
+  dockerfile_path: "scripts/docker/new_gateway.Dockerfile"
+  branches:
+    dev: "development"
+    qa: "qa"
+    prod: "master"
+
+build:
+  repository_name: "go-new-gateway"    # ECR repo name, shared across bundles by default
+  # repository_name_prod: "..."        # only set if the prod ECR repo has a different name
+                                        # (seen on calculate-rules-consumer-go: dev used
+                                        # "ring-calculate-eligibility-rules-consumer", prod used
+                                        # "calculate-rules-consumer")
+
+envs_enabled:
+  dev: true
+  qa: true
+  prod: true
+
+resources:
+  # replicas here is ALSO the autoscaling min replica count (replicaCount ==
+  # minReplicaCount/MinReplicas in every existing app) — that's why there's
+  # no separate "min" under autoscaling below. Only "max" needs stating there.
+  dev:  {cpu: "60m", memory: "120Mi", replicas: 2}
+  qa:   {cpu: "60m", memory: "120Mi", replicas: 2}
+  prod: {cpu: "260m", memory: "410Mi", replicas: 2}
+
+autoscaling:
+  engine: "keda"                 # "keda" or "hpa" — match whatever this team's other gateways already use
+  max: {dev: 2, qa: 5, prod: 10}  # min comes from resources.{env}.replicas above
+  cpu_target: 80
+  mem_target: 80
+
+pod_placement:
+  # Applies to qa AND prod together (dev is always full-spot regardless of
+  # this value — see the SKILL.md table). Pick one:
+  # "full-spot"    -> same as dev: nodeAffinity + toleration onto spot only.
+  #                   Fine for a low-priority/internal web app that doesn't
+  #                   need HA-style scheduling in qa/prod.
+  # "fifty-fifty"  -> podAntiAffinity spread by hostname only
+  # "min-domain"   -> podAntiAffinity + topologySpreadConstraints requiring
+  #                   at least 2 karpenter capacity-type domains (spot + on-demand).
+  #                   Needs appId/envId patched in after `tron create-app` — see
+  #                   the <FILL_AFTER_CREATE> placeholders the generator leaves.
+  qa_prod_strategy: "min-domain"
+
+ingress:
+  scheme: "internet-facing"      # "internal" for internal-only services
+  container_port: 8080
+  healthcheck_path: "/health"
+  hosts:
+    dev: "devtron-new-gateway-go.test.paywithring.com"
+    qa: "devtron-new-gateway-go.qa1.paywithr.io"
+    prod: "devtron-new-gateway-go.paywithring.com"
+  certificate_arn:
+    dev: "arn:aws:acm:ap-south-1:451914973813:certificate/REPLACE_ME"
+    qa: "arn:aws:acm:ap-south-1:451914973813:certificate/REPLACE_ME"
+    prod: "arn:aws:acm:ap-south-1:183716846541:certificate/REPLACE_ME"
+  alb_group_name:
+    dev: "onemi-app-dev-internet"
+    qa: "onemi-app-qa-internet"
+    prod: "onemi-app-prod-new-gateway-internet"
+  alb_group_order: "10"
+
+business_unit: "onemi"
+
+# Optional — only add this if the Docker image's own ENTRYPOINT/CMD needs
+# overriding. Most apps (consumer AND web) omit this entirely — e.g.
+# admin-gateway-go-prod has neither, despite being a web app. merchant-gateway-go
+# is the one example that needs it, because it wraps its binary:
+# container_entrypoint:
+#   args: ["/application/run"]
+#   command: ["/bin/sh", "-c"]

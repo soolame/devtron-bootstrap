@@ -1,0 +1,79 @@
+# Example answers file for a kafka-consumer / worker style app.
+# Consumers always get full-spot pod placement in every environment, no ingress,
+# and disabled Liveness/Readiness probes — this file only needs the parts that
+# actually vary; scripts/generate_devtron_app.py fills in every fixed convention
+# (chart version/type, labels, lifecycle hooks, volumes, secret/role naming, etc).
+
+app_name: "new-service-go-consumer"
+app_type: "consumer"            # the only two valid values: consumer | web
+project_name: "platform-engineering"  # the exact Devtron project name — no hardcoded lookup, type it out
+team_code: "pe"                  # short code used only for namespace suffixing (dev-pe, qa-pe, prod-pe)
+
+# Underlying business service this app belongs to — include the "-go" suffix
+# (e.g. "admin-service-go", "merchant-gateway-go"), NOT just "admin-service".
+# Used to build:
+#   Secrets Manager key: onemi/{env}/{base_service_name}/app-credentials
+#     (used as-is, "-go" included)
+#   IRSA role name:       onemi-app-{env}-{base_service_name_without_-go}-irsa-role
+#     (the generator strips the trailing "-go" for this one — that's the
+#     one place the two naming schemes diverge)
+# This is often NOT the same as app_name — e.g. admin-service-go-consumer's
+# base is "admin-service-go", because it shares a role/secret with the
+# admin-service-go gateway.
+base_service_name: "new-service-go"
+
+service_account:
+  create: true      # false if a sibling app (gateway/consumer/dlq of the same
+                     # base_service_name) already created the SA + IRSA role
+  name: null        # required if create is false — the existing SA name to reuse
+
+git:
+  url: "https://bitbucket.org/fastbanking/ring-new-service"
+  # account_name_nonprod / account_name_prod default to "Bitbucket-Sulaim2" /
+  # "Bitbucket" respectively (the convention seen across every migrated app) —
+  # only set these if this service needs a different git credential.
+  dockerfile_path: "scripts/docker/kafka_consumer.Dockerfile"
+  branches:
+    dev: "development"
+    qa: "qa"
+    prod: "main"
+
+build:
+  repository_name: "go-new-service-kafka-consumer"  # ECR repo name, shared across bundles by default
+  # repository_name_prod: "..."     # only set if the prod ECR repo has a different name
+                                     # (seen on calculate-rules-consumer-go: dev used
+                                     # "ring-calculate-eligibility-rules-consumer", prod used
+                                     # "calculate-rules-consumer")
+
+envs_enabled:
+  dev: true
+  qa: true
+  prod: true
+
+resources:
+  # replicas here is also the KEDA min AND max replica count for consumers —
+  # a fixed count driven by cpu/mem triggers, not an elastic range. That's
+  # why autoscaling below has no min/max of its own to fill in.
+  dev:  {cpu: "60m", memory: "120Mi", replicas: 1}
+  qa:   {cpu: "60m", memory: "120Mi", replicas: 1}
+  prod: {cpu: "128m", memory: "256Mi", replicas: 2}
+
+autoscaling:
+  engine: "keda"     # consumers are always keda regardless of this value
+  cpu_target: 80
+  mem_target: 80
+  # min/max both default to resources.{env}.replicas above — set autoscaling.max
+  # per-env here (like the web example does) only if this consumer should
+  # actually scale out beyond its base replica count.
+
+business_unit: "onemi"
+
+# Optional — only add this if the Docker image's own ENTRYPOINT/CMD needs
+# overriding. Not tied to app_type: none of the existing consumers (admin-service-go-consumer,
+# calculate-rules-consumer-go, go-loan-service-kafka-consumer-dlq,
+# offbook-bulk-upload-consumer-go) use this — they all run their image's
+# default entrypoint unmodified. Only add it if this specific image needs it,
+# the way merchant-gateway-go (a web app) does:
+# container_entrypoint:
+#   args: ["/application/run"]
+#   command: ["/bin/sh", "-c"]
