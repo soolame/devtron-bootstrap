@@ -8,6 +8,15 @@ app_type: "web"                # the only two valid values: consumer | web
 project_name: "merchant-sales" # the exact Devtron project name — no hardcoded lookup, type it out
 team_code: "ms"                 # short code used only for namespace suffixing (dev-ms, qa-ms, prod-ms)
 
+# Required — used on podLabels/rolloutLabels. Not derived or guessed from
+# app_type or anything else; always ask the user for the actual value.
+workload_type: "service"   # e.g. "service", "worker", "job" — whatever this org's tagging convention uses
+criticality: "tier-3"       # business criticality tier — a judgment call, always ask, never default it
+
+# Optional — defaults to "Ring" (every existing app uses this). Override if
+# this service belongs to a different brand (e.g. "kissht").
+# brand: "Ring"
+
 # Include the "-go" suffix — see the comment in answers-consumer.example.yaml
 # for how this splits between the Secrets Manager key and the IRSA role name.
 base_service_name: "new-gateway-go"
@@ -33,6 +42,8 @@ build:
                                         # (seen on calculate-rules-consumer-go: dev used
                                         # "ring-calculate-eligibility-rules-consumer", prod used
                                         # "calculate-rules-consumer")
+  # args:                              # optional — Docker build args (docker build --build-arg KEY=value),
+  #   APP_ENV: "production"            # only emitted if set; omit entirely if this Dockerfile takes none
 
 envs_enabled:
   dev: true
@@ -49,7 +60,11 @@ resources:
 
 autoscaling:
   engine: "keda"                 # "keda" or "hpa" — match whatever this team's other gateways already use
-  max: {dev: 2, qa: 5, prod: 10}  # min comes from resources.{env}.replicas above
+  # cpu_target/mem_target/max each accept either one flat number (applies to
+  # every env) or a per-env dict like "max" below, when they need to differ
+  # per environment (e.g. a lower target in qa than prod). min always comes
+  # from resources.{env}.replicas above, never from here.
+  max: {dev: 2, qa: 5, prod: 10}
   cpu_target: 80
   mem_target: 80
 
@@ -71,6 +86,9 @@ ingress:
   container_port: 8080
   healthcheck_path: "/health"
   hosts:
+    # one host per env is the default — a single string. If this env needs
+    # more than one hostname on the same ingress, use a list instead:
+    #   prod: ["devtron-new-gateway-go.paywithring.com", "alt-host.paywithring.com"]
     dev: "devtron-new-gateway-go.test.paywithring.com"
     qa: "devtron-new-gateway-go.qa1.paywithr.io"
     prod: "devtron-new-gateway-go.paywithring.com"

@@ -9,6 +9,15 @@ app_type: "consumer"            # the only two valid values: consumer | web
 project_name: "platform-engineering"  # the exact Devtron project name — no hardcoded lookup, type it out
 team_code: "pe"                  # short code used only for namespace suffixing (dev-pe, qa-pe, prod-pe)
 
+# Required — used on podLabels/rolloutLabels. Not derived or guessed from
+# app_type or anything else; always ask the user for the actual value.
+workload_type: "worker"     # e.g. "service", "worker", "job" — whatever this org's tagging convention uses
+criticality: "tier-3"        # business criticality tier — a judgment call, always ask, never default it
+
+# Optional — defaults to "Ring" (every existing app uses this). Override if
+# this service belongs to a different brand (e.g. "kissht").
+# brand: "Ring"
+
 # Underlying business service this app belongs to — include the "-go" suffix
 # (e.g. "admin-service-go", "merchant-gateway-go"), NOT just "admin-service".
 # Used to build:
@@ -44,6 +53,8 @@ build:
                                      # (seen on calculate-rules-consumer-go: dev used
                                      # "ring-calculate-eligibility-rules-consumer", prod used
                                      # "calculate-rules-consumer")
+  # args:                           # optional — Docker build args (docker build --build-arg KEY=value),
+  #   APP_ENV: "production"         # only emitted if set; omit entirely if this Dockerfile takes none
 
 envs_enabled:
   dev: true
@@ -60,11 +71,14 @@ resources:
 
 autoscaling:
   engine: "keda"     # consumers are always keda regardless of this value
+  # cpu_target/mem_target/max each accept either one flat number (applies
+  # to every env, as below) OR a per-env dict when they need to differ —
+  # e.g. max: {dev: 5, qa: 3, prod: 10} (see airflow-worker.yaml for a real
+  # example). min always comes from resources.{env}.replicas above, never
+  # from here — only set "max" here if this consumer should actually scale
+  # out beyond its base replica count.
   cpu_target: 80
   mem_target: 80
-  # min/max both default to resources.{env}.replicas above — set autoscaling.max
-  # per-env here (like the web example does) only if this consumer should
-  # actually scale out beyond its base replica count.
 
 business_unit: "onemi"
 

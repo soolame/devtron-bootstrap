@@ -47,6 +47,11 @@ related questions together instead of asking one at a time.
   - `consumer` — kafka consumer, DLQ consumer, cron/worker — no ingress.
   This changes pod placement, probes, and several other fields — get it
   right first.
+- `workload_type` and `criticality` for the standard labels — always ask,
+  never infer (e.g. never derive `workload_type` from `app_type`, and never
+  guess a criticality tier). These are org tagging/judgment calls.
+- `brand`, only if this service isn't the default `Ring` (e.g. `kissht`) —
+  ask if there's any doubt.
 
 **IRSA role / secret ownership** — ask, never guess:
 - What's the underlying **base service name** this app belongs to? Include
@@ -75,6 +80,11 @@ related questions together instead of asking one at a time.
   existing service (`calculate-rules-consumer-go`) uses a *different* repo
   name in prod than in dev/qa. Ask "is the prod ECR repo name the same?" and
   set `build.repository_name_prod` if not.
+- Docker build args, only if the Dockerfile actually declares any `ARG`s it
+  needs at build time — optional, most apps don't need this. If so, set
+  `build.args` (a plain key-value map); it maps straight to devtron-cli's
+  `build_configurations.args` (`docker build --build-arg KEY=value` per
+  entry). Omit entirely otherwise — don't invent values.
 - Git credential: defaults to `Bitbucket-Sulaim2` for the non-prod bundle
   and `Bitbucket` for the prod bundle (observed convention). Only ask if the
   user hints this service needs something different.
@@ -84,9 +94,16 @@ related questions together instead of asking one at a time.
   suggest the lightweight defaults seen elsewhere (60m/120Mi for small
   consumers) as a starting point, but don't assume — ask.
 - Autoscaling target (cpu/mem %) and min/max replicas if elastic.
-  - Consumers always use KEDA with `minReplicaCount == maxReplicaCount`
-    (fixed count, not elastic) — just confirm the replica count, no need to
-    ask "keda or hpa" for consumers.
+  `autoscaling.cpu_target`, `mem_target`, and `max` each accept either one
+  flat number (applies to every env) or a per-env dict (e.g.
+  `max: {dev: 5, qa: 3, prod: 10}`, see `scripts/examples/airflow-worker.yaml`)
+  — ask whether this app needs different targets/ceilings per environment
+  before assuming a flat value everywhere. `min` is never set here — it
+  always comes from `resources.{env}.replicas`.
+  - Consumers always use KEDA. By default `max` isn't set, so `min ==
+    maxReplicaCount == resources.{env}.replicas` (fixed count, not elastic)
+    — only set `autoscaling.max` if this consumer should actually scale out.
+    No need to ask "keda or hpa" for consumers.
   - `web` apps can use either plain Kubernetes HPA (`autoscaling`, seen on
     admin-gateway-go-prod) or KEDA (`kedaAutoscaling`, seen on
     merchant-gateway-go). Ask, or better: check whether this app has
@@ -94,7 +111,10 @@ related questions together instead of asking one at a time.
 
 **Ingress (`web` app type only)**
 - Scheme: `internal` vs `internet-facing`.
-- Hostname per environment.
+- Hostname per environment. Normally one host per env (a plain string in
+  `ingress.hosts.{env}`) — if an env genuinely needs more than one hostname
+  on the same ingress, `ingress.hosts.{env}` also accepts a list of strings
+  and the generator emits one `hosts[]` entry per hostname.
 - ACM certificate ARN per environment (these are per-AWS-account — dev/qa
   share one cert pool in account 451914973813, prod has its own in
   183716846541; look at another gateway's override file in this repo for a
@@ -166,12 +186,16 @@ need to know them well enough to sanity-check the output or explain it:
   instead authenticates via `secretStore.aws.auth.jwt.serviceAccountRef.name`
   pointing at the app's k8s ServiceAccount. Don't collapse these two into one
   shape — they're deliberately different.
-- Standard labels (`podLabels`/`rolloutLabels`): `env: eks-{env}`,
-  `app-group: light-apps`, `Brand: Ring`, `Business-Units: onemi`,
-  `Language: GO`, `Team: {project_name}`. (A few existing files drifted to
-  `on-emi` / `si-creva` for Business-Units — that's copy/paste noise, not a
-  second standard; always emit `onemi` unless the user explicitly says
-  otherwise.)
+- Standard labels (`podLabels`/`rolloutLabels`, kebab-case keys):
+  `business-unit: onemi`, `brand: Ring` (default — override with `brand` if
+  the service belongs to a different brand, e.g. `kissht`), `env: eks-{env}`,
+  `workload-type: {workload_type}`, `criticality: {criticality}`,
+  `language: {language}`, `team: {project_name}`, and `service: {app_name}`
+  (web apps always; consumers only on `podLabels`, matching
+  `include_service`). `workload_type` and `criticality` are **required,
+  always-ask** fields — never default or infer them (e.g. never derive
+  `workload_type` from `app_type`) since they're org tagging/judgment calls,
+  not something safe to guess.
 - Common infra bits on every app: `containerSecurityContext.readOnlyRootFilesystem: true`,
   a `tmp-dir` emptyDir volume mounted at `/tmp`, a `preStop: sleep 15`
   lifecycle hook, `podAnnotations: {downscaler/exclude: "true"}`,
@@ -190,6 +214,10 @@ app type, then fill it in — don't invent new top-level keys). Then run:
 ```bash
 python3 scripts/generate_devtron_app.py --answers /path/to/answers.yaml
 ```
+
+`--answers` accepts multiple files (`--answers a.yaml b.yaml c.yaml`) when
+onboarding several services in one go — each is generated independently, so
+one bad file doesn't block the rest.
 
 This only writes files locally (`{app_name}/non-prod/` and `{app_name}/prod/`)
 — it never calls the Devtron API. Show the user the generated files/diff

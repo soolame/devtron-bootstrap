@@ -12,6 +12,11 @@ Usage:
     python3 scripts/generate_devtron_app.py --answers path/to/answers.yaml
     python3 scripts/generate_devtron_app.py --answers path/to/answers.yaml --out-dir . --force
 
+    # multiple apps in one run — pass several files, each is generated
+    # independently (one bad file doesn't stop the rest; exit code is
+    # non-zero if any failed):
+    python3 scripts/generate_devtron_app.py --answers app-a.yaml app-b.yaml app-c.yaml
+
 See scripts/examples/answers-consumer.example.yaml and
     scripts/examples/answers-web.example.yaml for the input schema.
 """
@@ -54,6 +59,19 @@ def env_name(env, team_code):
     return f"{env}-{team_code}"
 
 
+def per_env_value(value, env, default):
+    """Accept either a flat scalar (applies to every env the same) or a
+    per-env dict like {dev: x, qa: y, prod: z}. Missing/None falls back to
+    default. Used for autoscaling.max/cpu_target/mem_target, which often
+    need to differ per env (e.g. a lower ceiling in qa than prod) but don't
+    have to."""
+    if isinstance(value, dict):
+        return value.get(env, default)
+    if value is None:
+        return default
+    return value
+
+
 def irsa_role_arn(env, base_service_name):
     # base_service_name is entered WITH its "-go" suffix (e.g. "admin-service-go",
     # "merchant-gateway-go") to match the Secrets Manager key convention below —
@@ -87,14 +105,15 @@ def sa_name(app_name, service_account_cfg):
 # Reusable values.yaml building blocks
 # ------------------------------------------------------------------------------
 
-def common_labels(env, project_name, app_name, business_unit, include_service=True):
+def common_labels(env, project_name, app_name, business_unit, brand, workload_type, criticality, language, include_service=True):
     labels = {
+        "business-unit": business_unit,
+        "brand": brand,
         "env": ENV_LABEL[env],
-        "app-group": "light-apps",
-        "Brand": "Ring",
-        "Business-Units": business_unit,
-        "Language": "GO",
-        "Team": project_name,
+        "workload-type": workload_type,
+        "criticality": criticality,
+        "language": language,
+        "team": project_name,
     }
     if include_service:
         labels["service"] = app_name
@@ -302,6 +321,10 @@ def autoscaling_block(app_type, engine, min_r, max_r, cpu_target, mem_target):
 
 def ingress_block(env, ingress_cfg, app_name):
     scheme = ingress_cfg["scheme"]
+    # hosts.{env} may be a single host string or a list of host strings —
+    # every host in the list gets the same pathType/paths.
+    hosts_cfg = ingress_cfg["hosts"][env]
+    host_names = [hosts_cfg] if isinstance(hosts_cfg, str) else hosts_cfg
     return {
         "enabled": True,
         "className": "alb",
@@ -319,11 +342,8 @@ def ingress_block(env, ingress_cfg, app_name):
             "alb.ingress.kubernetes.io/ssl-redirect": "443",
         },
         "hosts": [
-            {
-                "host": ingress_cfg["hosts"][env],
-                "pathType": "ImplementationSpecific",
-                "paths": ["/*"],
-            }
+            {"host": h, "pathType": "ImplementationSpecific", "paths": ["/*"]}
+            for h in host_names
         ],
         "labels": {},
         "tls": [],
@@ -342,6 +362,10 @@ def build_values(env, answers, is_base):
     team_code = answers["team_code"]
     project_name = answers["project_name"]
     business_unit = answers.get("business_unit", "onemi")
+    brand = answers.get("brand", "Ring")
+    workload_type = answers["workload_type"]
+    criticality = answers["criticality"]
+    language = answers.get("language", "GO")
     base_service_name = answers["base_service_name"]
     res = answers["resources"][env]
     port = answers.get("ingress", {}).get("container_port", 8080)
@@ -367,14 +391,15 @@ def build_values(env, answers, is_base):
         )
     )
 
+    autoscaling_cfg = answers.get("autoscaling", {})
     values.update(
         autoscaling_block(
             app_type,
-            answers.get("autoscaling", {}).get("engine", "keda"),
+            autoscaling_cfg.get("engine", "keda"),
             res.get("replicas", 1),
-            answers.get("autoscaling", {}).get("max", {}).get(env, res.get("replicas", 1)),
-            answers.get("autoscaling", {}).get("cpu_target", 80),
-            answers.get("autoscaling", {}).get("mem_target", 80),
+            per_env_value(autoscaling_cfg.get("max"), env, res.get("replicas", 1)),
+            per_env_value(autoscaling_cfg.get("cpu_target"), env, 80),
+            per_env_value(autoscaling_cfg.get("mem_target"), env, 80),
         )
     )
 
@@ -409,10 +434,16 @@ def build_values(env, answers, is_base):
         values["podDisruptionBudget"] = {"minAvailable": "0"}
         values["ingress"] = {"enabled": False}
 
-    values["rolloutLabels"] = common_labels(env, project_name, app_name, business_unit, include_service=(app_type == "web"))
+    values["rolloutLabels"] = common_labels(
+        env, project_name, app_name, business_unit, brand, workload_type, criticality, language,
+        include_service=(app_type == "web"),
+    )
     values["image"] = {"pullPolicy": "IfNotPresent"}
     values["podAnnotations"] = {"downscaler/exclude": "true"}
-    values["podLabels"] = common_labels(env, project_name, app_name, business_unit, include_service=True)
+    values["podLabels"] = common_labels(
+        env, project_name, app_name, business_unit, brand, workload_type, criticality, language,
+        include_service=True,
+    )
     values["replicaCount"] = res.get("replicas", 1)
     values["resources"] = {
         "limits": {"cpu": res["cpu"], "memory": res["memory"]},
@@ -481,6 +512,20 @@ def eso_secret_block(env, app_name, base_service_name, service_account_ref=None)
     return block
 
 
+def build_configurations_block(registry, repository_name, git_cfg, build_cfg):
+    block = {
+        "container_registry_name": registry,
+        "repository_name": repository_name,
+        "build_type": "DockerfileExists",
+        "dockerfile_path": git_cfg["dockerfile_path"],
+    }
+    # Optional Docker build args (docker build --build-arg KEY=value per
+    # entry) — only emitted if the answers file sets build.args.
+    if build_cfg.get("args"):
+        block["args"] = build_cfg["args"]
+    return block
+
+
 def build_config_yaml(answers, envs, primary_env):
     app_name = answers["app_name"]
     team_code = answers["team_code"]
@@ -521,12 +566,7 @@ def build_config_yaml(answers, envs, primary_env):
                 "fetch_submodules": False,
             }
         ],
-        "build_configurations": {
-            "container_registry_name": registry,
-            "repository_name": repository_name,
-            "build_type": "DockerfileExists",
-            "dockerfile_path": git_cfg["dockerfile_path"],
-        },
+        "build_configurations": build_configurations_block(registry, repository_name, git_cfg, build_cfg),
         "base_configurations": {
             "deployment_template": {
                 "version": CHART_VERSION,
@@ -608,6 +648,8 @@ def validate(answers):
         "project_name",
         "team_code",
         "base_service_name",
+        "workload_type",
+        "criticality",
         "git",
         "build",
         "resources",
@@ -634,19 +676,13 @@ def validate(answers):
     return envs_enabled
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--answers", required=True, help="Path to the answers YAML file")
-    parser.add_argument("--out-dir", default=".", help="Directory to write app folders into (default: cwd)")
-    parser.add_argument("--force", action="store_true", help="Overwrite existing files")
-    args = parser.parse_args()
-
-    answers_path = Path(args.answers)
+def generate_one(answers_path, out_dir, force):
+    """Generate the non-prod/prod bundles for a single answers file. Returns
+    the app_name on success (raises on any validation/render error)."""
     with open(answers_path) as f:
         answers = yaml.safe_load(f)
 
     envs_enabled = validate(answers)
-    out_dir = Path(args.out_dir)
     app_name = answers["app_name"]
     team_code = answers["team_code"]
 
@@ -662,28 +698,27 @@ def main():
 
     if nonprod_envs:
         cfg = build_config_yaml(answers, nonprod_envs, primary_env="dev")
-        write_yaml(nonprod_dir / "config.yaml", cfg, args.force)
-        write_yaml(nonprod_dir / f"base-{app_name}-values.yaml", build_values(nonprod_envs[0], answers, is_base=True), args.force)
+        write_yaml(nonprod_dir / "config.yaml", cfg, force)
+        write_yaml(nonprod_dir / f"base-{app_name}-values.yaml", build_values(nonprod_envs[0], answers, is_base=True), force)
         for env in nonprod_envs:
             ename = env_name(env, team_code)
             write_yaml(
                 nonprod_dir / f"override-{app_name}-{ename}-values.yaml",
                 build_values(env, answers, is_base=False),
-                args.force,
+                force,
             )
 
     if prod_envs:
         cfg = build_config_yaml(answers, prod_envs, primary_env="prod")
-        write_yaml(prod_dir / "config.yaml", cfg, args.force)
-        write_yaml(prod_dir / f"base-{app_name}-values.yaml", build_values("prod", answers, is_base=True), args.force)
+        write_yaml(prod_dir / "config.yaml", cfg, force)
+        write_yaml(prod_dir / f"base-{app_name}-values.yaml", build_values("prod", answers, is_base=True), force)
         ename = env_name("prod", team_code)
         write_yaml(
             prod_dir / f"override-{app_name}-{ename}-values.yaml",
             build_values("prod", answers, is_base=False),
-            args.force,
+            force,
         )
 
-    print("\nDone. This script only wrote files — nothing was sent to Devtron.")
     print("Review the diffs, then run e.g.:")
     if nonprod_envs:
         print(f"  export DEVTRON_URL=... DEVTRON_API_TOKEN=...   # non-prod devtron")
@@ -693,10 +728,47 @@ def main():
         print(f"  tron --config {app_name}/prod/config.yaml create-app")
     if answers.get("pod_placement", {}).get("qa_prod_strategy") == "min-domain":
         print(
-            "\nNOTE: min-domain placement was requested — after create-app, fetch the "
+            "NOTE: min-domain placement was requested — after create-app, fetch the "
             "appId/envId from the Devtron UI and replace the '<FILL_AFTER_CREATE>' "
             "placeholders in the qa/prod override values files, then run update-app."
         )
+
+    return app_name
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--answers",
+        required=True,
+        nargs="+",
+        help="Path(s) to one or more answers YAML files — pass multiple to generate several apps in one run",
+    )
+    parser.add_argument("--out-dir", default=".", help="Directory to write app folders into (default: cwd)")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing files")
+    args = parser.parse_args()
+
+    out_dir = Path(args.out_dir)
+    succeeded = []
+    failed = []
+
+    for answers_path in args.answers:
+        print(f"\n=== {answers_path} ===")
+        try:
+            app_name = generate_one(Path(answers_path), out_dir, args.force)
+            succeeded.append((answers_path, app_name))
+        except Exception as exc:
+            print(f"ERROR: {answers_path}: {exc}", file=sys.stderr)
+            failed.append((answers_path, exc))
+
+    print(f"\nDone. This script only wrote files — nothing was sent to Devtron.")
+    print(f"{len(succeeded)} succeeded, {len(failed)} failed.")
+    if failed:
+        print("Failed files:", file=sys.stderr)
+        for answers_path, exc in failed:
+            print(f"  - {answers_path}: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
